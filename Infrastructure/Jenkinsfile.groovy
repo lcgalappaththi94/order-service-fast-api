@@ -3,14 +3,9 @@ pipeline {
 
     environment {
         // Tag the Docker image with the build number
-        DOCKER_IMAGE = "order-service:${env.BUILD_NUMBER}"
-        // Local Docker registry address
-        REGISTRY      = "localhost:5000"
-    }
-
-    tools {
-        // Assumes you have a Jenkins tool named "Python3.9"
-        python 'Python3.9'
+        DOCKER_IMAGE         = "order-service:${env.BUILD_NUMBER}"
+        DOCKER_HUB_NAMESPACE = "lcgalappaththi94"
+        IMAGE_NAME           = "${DOCKER_HUB_NAMESPACE}/order-service"
     }
 
     stages {
@@ -30,41 +25,60 @@ pipeline {
                 '''
             }
             post {
-                success { echo "🟢 Build succeeded" }
-                failure { error "🔴 Build failed" }
+                success { echo '🟢 Build succeeded' }
+                failure { error '🔴 Build failed' }
             }
         }
 
         stage('Test') {
             steps {
-                sh '''
-                  pip install -r requirements.txt dev-requirements.txt
-                  pytest --junitxml=reports/junit.xml
-                '''
-                junit 'reports/junit.xml'
+                script {
+                    withCredentials([usernamePassword(
+                    credentialsId: 'docker-hub-creds',
+                    usernameVariable: 'DOCKERHUB_USER',
+                    passwordVariable: 'DOCKERHUB_PASS'
+                )]) {
+                    sh '''
+                      echo "$DOCKERHUB_PASS" | docker login --username "$DOCKERHUB_USER" --password-stdin
+                    '''
+                    }
+
+                    docker.image('python:3.9-slim').inside("-u root -v $PWD:$PWD -w $PWD") {
+                        sh 'pip install -r requirements.txt dev-requirements.txt'
+                        sh 'pytest --junitxml=reports/junit.xml'
+                    }
+                }
+            }
+            post {
+                always {
+                    junit 'reports/junit.xml'
+                }
             }
         }
 
         stage('Code Quality') {
             steps {
-                sh '''
-                  pylint src/**/*.py > reports/pylint.txt || true
-                '''
+                script {
+                    docker.image('python:3.9-slim').inside("-u root -v $PWD:$PWD -w $PWD") {
+                        sh 'pylint src/**/*.py > reports/pylint.txt || true'
+                    }
+                }
                 recordIssues tools: [pylint(pattern: 'reports/pylint.txt')]
             }
         }
 
         stage('Security') {
             steps {
-                sh '''
-                  bandit -r src -f html -o reports/bandit.html
-                '''
+                script {
+                    docker.image('python:3.9-slim').inside("-u root -v $PWD:$PWD -w $PWD") {
+                        sh 'bandit -r src -f html -o reports/bandit.html'
+                    }
+                }
                 publishHTML([
-                  reportDir:    'reports',
-                  reportFiles:  'bandit.html',
-                  reportName:   'Bandit Security Report',
-                  keepAll:      true,
-                  alwaysLinkToLastBuild: true
+                    reportDir:       'reports',
+                    reportFiles:     'bandit.html',
+                    reportName:      'Bandit Security Report',
+                    alwaysLinkToLastBuild: true
                 ])
             }
         }
@@ -83,28 +97,32 @@ pipeline {
 
         stage('Release') {
             steps {
-                // Push the image into the local Docker registry
-                sh '''
-                  docker tag ${DOCKER_IMAGE} ${REGISTRY}/${DOCKER_IMAGE}
-                  docker push ${REGISTRY}/${DOCKER_IMAGE}
-                '''
+                withCredentials([usernamePassword(
+                    credentialsId: 'docker-hub-creds',
+                    usernameVariable: 'DOCKERHUB_USER',
+                    passwordVariable: 'DOCKERHUB_PASS'
+                )]) {
+                    sh '''
+                      echo "$DOCKERHUB_PASS" | docker login --username "$DOCKERHUB_USER" --password-stdin
+                      docker tag ${DOCKER_IMAGE} ${IMAGE_NAME}:${env.BUILD_NUMBER}
+                      docker push ${IMAGE_NAME}:${env.BUILD_NUMBER}
+                    '''
+                }
             }
         }
 
         stage('Monitoring & Alerting') {
             steps {
-                echo "✅ Monitoring integration would run here"
+                echo '✅ Monitoring integration placeholder'
             }
         }
     }
 
     post {
         always {
-            // Show running containers for debugging
             sh 'docker ps -a'
         }
         cleanup {
-            // Tear down test deployment
             sh 'docker rm -f order-service-test || true'
         }
     }
